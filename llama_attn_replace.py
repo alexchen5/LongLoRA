@@ -24,10 +24,11 @@ def forward_flashattn(
     hidden_states: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.Tensor] = None,
-    past_key_value: Optional[Tuple[torch.Tensor]] = None,
+    past_key_values: Optional[Tuple[torch.Tensor]] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
     padding_mask: Optional[torch.LongTensor] = None,
+    **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     """Input shape: Batch x Time x Channel
 
@@ -62,20 +63,20 @@ def forward_flashattn(
     # [bsz, nh, q_len, hd]
 
     kv_seq_len = key_states.shape[-2]
-    if past_key_value is not None:
-        kv_seq_len += past_key_value[0].shape[-2]
+    if past_key_values is not None:
+        kv_seq_len += past_key_values[0].shape[-2]
     cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
     query_states, key_states = apply_rotary_pos_emb(
         query_states, key_states, cos, sin, position_ids
     )
 
     # Past Key value support
-    if past_key_value is not None:
+    if past_key_values is not None:
         # reuse k, v, self_attention
-        key_states = torch.cat([past_key_value[0], key_states], dim=2)
-        value_states = torch.cat([past_key_value[1], value_states], dim=2)
+        key_states = torch.cat([past_key_values[0], key_states], dim=2)
+        value_states = torch.cat([past_key_values[1], value_states], dim=2)
 
-    past_key_value = (key_states, value_states) if use_cache else None
+    past_key_values = (key_states, value_states) if use_cache else None
 
     # repeat k/v heads if n_kv_heads < n_heads
     key_states = repeat_kv(key_states, self.num_key_value_groups)
@@ -127,17 +128,18 @@ def forward_flashattn(
     output = output.reshape(bsz, 2, q_len, nheads // 2, self.head_dim).transpose(1, 2).reshape(bsz, q_len, nheads,
                                                                                                self.head_dim)
 
-    return self.o_proj(rearrange(output, "b s h d -> b s (h d)")), None, past_key_value
+    return self.o_proj(rearrange(output, "b s h d -> b s (h d)")), None, past_key_values
 
 def forward_flashattn_full(
     self,
     hidden_states: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.Tensor] = None,
-    past_key_value: Optional[Tuple[torch.Tensor]] = None,
+    past_key_values: Optional[Tuple[torch.Tensor]] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
     padding_mask: Optional[torch.LongTensor] = None,
+    **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     """Input shape: Batch x Time x Channel
 
@@ -169,20 +171,20 @@ def forward_flashattn_full(
     # [bsz, nh, q_len, hd]
 
     kv_seq_len = key_states.shape[-2]
-    if past_key_value is not None:
-        kv_seq_len += past_key_value[0].shape[-2]
+    if past_key_values is not None:
+        kv_seq_len += past_key_values[0].shape[-2]
     cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
     query_states, key_states = apply_rotary_pos_emb(
         query_states, key_states, cos, sin, position_ids
     )
 
     # Past Key value support
-    if past_key_value is not None:
+    if past_key_values is not None:
         # reuse k, v, self_attention
-        key_states = torch.cat([past_key_value[0], key_states], dim=2)
-        value_states = torch.cat([past_key_value[1], value_states], dim=2)
+        key_states = torch.cat([past_key_values[0], key_states], dim=2)
+        value_states = torch.cat([past_key_values[1], value_states], dim=2)
 
-    past_key_value = (key_states, value_states) if use_cache else None
+    past_key_values = (key_states, value_states) if use_cache else None
 
     # repeat k/v heads if n_kv_heads < n_heads
     key_states = repeat_kv(key_states, self.num_key_value_groups)
@@ -219,7 +221,7 @@ def forward_flashattn_full(
     )
     output = output.reshape(bsz, q_len, self.num_heads, self.head_dim)
 
-    return self.o_proj(rearrange(output, "b s h d -> b s (h d)")), None, past_key_value
+    return self.o_proj(rearrange(output, "b s h d -> b s (h d)")), None, past_key_values
 
 
 def forward_noflashattn(
@@ -227,10 +229,11 @@ def forward_noflashattn(
     hidden_states: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Tuple[torch.Tensor]] = None,
+    past_key_values: Optional[Tuple[torch.Tensor]] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
     padding_mask: Optional[torch.LongTensor] = None,
+    **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     bsz, q_len, _ = hidden_states.size()
 
@@ -267,17 +270,17 @@ def forward_noflashattn(
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
     kv_seq_len = key_states.shape[-2]
-    if past_key_value is not None:
-        kv_seq_len += past_key_value[0].shape[-2]
+    if past_key_values is not None:
+        kv_seq_len += past_key_values[0].shape[-2]
     cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
-    if past_key_value is not None:
+    if past_key_values is not None:
         # reuse k, v, self_attention
-        key_states = torch.cat([past_key_value[0], key_states], dim=2)
-        value_states = torch.cat([past_key_value[1], value_states], dim=2)
+        key_states = torch.cat([past_key_values[0], key_states], dim=2)
+        value_states = torch.cat([past_key_values[1], value_states], dim=2)
 
-    past_key_value = (key_states, value_states) if use_cache else None
+    past_key_values = (key_states, value_states) if use_cache else None
 
     # repeat k/v heads if n_kv_heads < n_heads
     key_states = repeat_kv(key_states, self.num_key_value_groups)
@@ -337,7 +340,7 @@ def forward_noflashattn(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights, past_key_values
 
 # Disable the transformation of the attention mask in LlamaModel as the flash attention
 # requires the attention mask to be the same as the key_padding_mask
@@ -366,10 +369,11 @@ def forward_flashattn_inference(
     hidden_states: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.Tensor] = None,
-    past_key_value: Optional[Tuple[torch.Tensor]] = None,
+    past_key_values: Optional[Tuple[torch.Tensor]] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
     padding_mask: Optional[torch.Tensor] = None,
+    **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     if output_attentions:
         warnings.warn(
@@ -391,22 +395,22 @@ def forward_flashattn_inference(
 
     kv_seq_len = k.shape[1]
     past_kv_len = 0
-    if past_key_value is not None:
-        past_kv_len = past_key_value[0].shape[2]
+    if past_key_values is not None:
+        past_kv_len = past_key_values[0].shape[2]
         kv_seq_len += past_kv_len
 
     cos_sin = self.rotary_emb(v, seq_len=kv_seq_len)
     q, k = apply_rotary_pos_emb_inference(q, k, cos_sin, position_ids)
 
-    if past_key_value is not None:
+    if past_key_values is not None:
         assert (
             flash_attn_version >= "2.1.0"
-        ), "past_key_value support requires flash-attn >= 2.1.0"
+        ), "past_key_values support requires flash-attn >= 2.1.0"
         # reuse k, v
-        k = torch.cat([past_key_value[0].transpose(1, 2), k], dim=1)
-        v = torch.cat([past_key_value[1].transpose(1, 2), v], dim=1)
+        k = torch.cat([past_key_values[0].transpose(1, 2), k], dim=1)
+        v = torch.cat([past_key_values[1].transpose(1, 2), v], dim=1)
 
-    past_key_value = (k.transpose(1, 2), v.transpose(1, 2)) if use_cache else None
+    past_key_values = (k.transpose(1, 2), v.transpose(1, 2)) if use_cache else None
 
     if attention_mask is None:
         output = flash_attn_func(q, k, v, 0.0, softmax_scale=None, causal=True).view(
@@ -432,7 +436,7 @@ def forward_flashattn_inference(
         output_unpad = output_unpad.reshape(-1, self.num_heads * self.head_dim)
         output = pad_input(output_unpad, indices, bsz, q_len)
 
-    return self.o_proj(output), None, past_key_value
+    return self.o_proj(output), None, past_key_values
 
 def _prepare_decoder_attention_mask_inference(
     self, attention_mask, input_shape, inputs_embeds, past_key_values_length
