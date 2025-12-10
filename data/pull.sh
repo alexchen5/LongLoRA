@@ -1,1 +1,0 @@
-cp $MYSCRATCH/AtomWorldBench/src/data/*_qa_format.json ./data
