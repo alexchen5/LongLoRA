@@ -90,7 +90,6 @@ pip install $MYSOFTWARE/python_wheels/flash_attn-2.8.3+rocm7.1_gfx90a_d128-cp310
 # 1. Clone and cd into this repo
 cd $MYSCRATCH/
 git clone https://github.com/alexchen5/LongLoRA.git
-git branch atomworld            # changes are on atomworld branch
 cd $MYSCRATCH/LongLoRA
 
 # 2. Install deps
