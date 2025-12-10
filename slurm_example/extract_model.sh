@@ -4,10 +4,7 @@ base_model="Qwen/Qwen3-4B"
 # base_model="huggyllama/llama-7b"
 
 peft_models=(
-    /scratch/pawsey1151/alexchen5/LongLoRA/output/20251203_135521_Qwen3-4B_add_atom_action_qa_format
-    /scratch/pawsey1151/alexchen5/LongLoRA/output/20251203_135521_Qwen3-4B_change_atom_action_qa_format
-    /scratch/pawsey1151/alexchen5/LongLoRA/output/20251203_135522_Qwen3-4B_delete_below_atom_action_qa_format
-    # /scratch/pawsey1151/alexchen5/LongLoRA/output/20251203_100415_llama-7b_train_data
+    <YOUR_PATH>/output/20251203_135521_Qwen3-4B_add_atom_action_qa_format
 )
 
 checkpoints=(
@@ -27,7 +24,7 @@ for peft_model in "${peft_models[@]}"; do
         script="tmp_extract_${model_name}.sh"
         cat > "$script" <<EOF
 #!/bin/bash -l
-#SBATCH --account=pawsey1151-gpu
+#SBATCH --account=<YOUR_PROJECT_ID>
 #SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=0:30:00
