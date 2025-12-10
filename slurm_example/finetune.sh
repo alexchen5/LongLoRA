@@ -6,20 +6,7 @@ models=(
 )
 
 datasets=(
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/train_data.json
-    /scratch/pawsey1151/alexchen5/LongLoRA/data/train500_data.json
-    /scratch/pawsey1151/alexchen5/LongLoRA/data/tong300_train.json
-
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/add_atom_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/change_atom_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/delete_below_atom_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/insert_between_atoms_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/move_atom_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/move_towards_atom_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/remove_atom_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/rotate_around_atom_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/super_cell_action_qa_format.json
-    # /scratch/pawsey1151/alexchen5/LongLoRA/data/swap_atoms_action_qa_format.json
+    <YOUR_PATH>/train_data.json
 )
 
 project="LongLoRA"
@@ -36,12 +23,12 @@ for model in "${models[@]}"; do
         script="tmp_run_${exp_name}.sh"
         cat > "$script" <<EOF
 #!/bin/bash -l
-#SBATCH --account=pawsey1151-gpu
+#SBATCH --account=<YOUR_ACCOUNT>
 #SBATCH --nodes=4
 #SBATCH --gres=gpu:8
 #SBATCH --time=03:00:00
 #SBATCH --job-name=${exp_name}
-#SBATCH --output=$MYSCRATCH/slurm/LongLoRA/slurm-%x-%j.out
+#SBATCH --output=<YOUR_PATH>/slurm-%x-%j.out
 
 export OUTPUT_ROOT="\${MYSCRATCH}/LongLoRA/output"
 export EXP_DIR="\${OUTPUT_ROOT}/${exp_name}"
