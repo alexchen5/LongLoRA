@@ -1,12 +1,12 @@
 #!/bin/bash -l
-#SBATCH --account=pawsey1151-gpu
+#SBATCH --account=<YOUR_PROJECT_ID>
 #SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=5:00:00
 #SBATCH --gres=gpu:1
 #SBATCH -N 1
 #SBATCH --job-name=longlora_install
-#SBATCH --output=/scratch/pawsey1151/alexchen5/slurm/LongLoRA/install-slurm-%j.out
+#SBATCH --output=<YOUR_PATH>/install-slurm-%j.out
 
 project="LongLoRA"
 image="pytorch_rocm7.1_ubuntu22.04_py3.10_pytorch_release_2.8.0"
