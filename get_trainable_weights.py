@@ -42,8 +42,7 @@ def main(args):
 
     adapter_model = os.path.join(path, "adapter_model.bin")
     trainable_params = os.path.join(path, "trainable_params.bin")
-    if not os.path.isfile(adapter_model):
-        torch.save(weights_lora, adapter_model)
+    torch.save(weights_lora, adapter_model)
     torch.save(weights_trainable, trainable_params)
 
 if __name__ == "__main__":

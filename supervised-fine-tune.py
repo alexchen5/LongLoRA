@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import io
+import sys
 import os
 import copy
 import json
@@ -233,7 +234,16 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
 
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
-    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    if len(sys.argv) == 2 and sys.argv[1].endswith(".yaml"):
+        # Case A: Config file passed (The Standard Pipeline way)
+        # Note: requires 'pip install pyyaml' if not present, though usually available
+        model_args, data_args, training_args = parser.parse_yaml_file(os.path.abspath(sys.argv[1]))
+    elif len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+         # Case B: JSON file passed
+        model_args, data_args, training_args = parser.parse_json_file(os.path.abspath(sys.argv[1]))
+    else:
+        # Case C: Standard CLI flags (Backwards compatibility)
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     # NOTE: May expand supported model types in the future
     if model_args.model_type == "gpt-neox":

@@ -19,6 +19,11 @@ import transformers
 from peft import PeftModel
 from typing import Dict
 
+# ---------------- CONFIGURATION ---------------- #
+# Force CPU execution to avoid ROCm/Bitsandbytes crashes
+DEVICE = torch.device("cpu")
+# ----------------------------------------------- #
+
 IGNORE_INDEX = -100
 DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
@@ -27,11 +32,11 @@ DEFAULT_UNK_TOKEN = "<unk>"
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
-    parser.add_argument('--base_model', type=str, default="/data/pretrained-models/llama-7b-hf")
-    parser.add_argument('--peft_model', type=str, default=None, help='')
+    parser.add_argument('--base_model', type=str, required=True)
+    parser.add_argument('--peft_model', type=str, required=True)
     parser.add_argument('--context_size', type=int, default=-1, help='context size during fine-tuning')
-    parser.add_argument('--save_path', type=str, default=None, help='')
-    parser.add_argument('--cache_dir', type=str, default=None, help='./cache_dir')
+    parser.add_argument('--save_path', type=str, required=True)
+    parser.add_argument('--cache_dir', type=str, default=None)
     args = parser.parse_args()
     return args
 
@@ -40,10 +45,7 @@ def smart_tokenizer_and_embedding_resize(
     tokenizer: transformers.PreTrainedTokenizer,
     model: transformers.PreTrainedModel,
 ):
-    """Resize tokenizer and embedding.
-
-    Note: This is the unoptimized version that may make your embedding size not be divisible by 64.
-    """
+    """Resize tokenizer and embedding."""
     num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
     model.resize_token_embeddings(len(tokenizer))
 
@@ -58,20 +60,11 @@ def smart_tokenizer_and_embedding_resize(
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
 def main(args):
-    device = "cuda:0"
-    torch.cuda.set_device(device)
+    print(f"--- Starting Merge on {DEVICE} ---")
+    print("Base Model:", args.base_model)
+    print("LoRA Adapter:", args.peft_model)
 
-    print("base model", args.base_model)
-    print("peft model", args.peft_model)
-
-    # Load model and tokenizer
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        args.base_model,
-        cache_dir=args.cache_dir,
-        torch_dtype=torch.float16,
-        device_map="auto",
-    )
-
+    # 1. Load Tokenizer
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         args.base_model,
         cache_dir=args.cache_dir,
@@ -79,6 +72,7 @@ def main(args):
         padding_side="right",
         use_fast=False,
     )
+
     special_tokens_dict = dict()
     if tokenizer.pad_token is None:
         special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
@@ -89,24 +83,55 @@ def main(args):
     if tokenizer.unk_token is None:
         special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
 
+    # 2. Load Base Model (Strictly CPU, No Device Map)
+    print("Loading base model...")
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        args.base_model,
+        cache_dir=args.cache_dir,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True, # Important for RAM management
+        device_map=None,        # DISABLE auto device map to prevent nesting issues
+    ).to(DEVICE)
+
+    # 3. Resize Embeddings
+    print("Resizing embeddings...")
     smart_tokenizer_and_embedding_resize(
         special_tokens_dict=special_tokens_dict,
         tokenizer=tokenizer,
         model=model,
     )
 
-    trainable_params = os.path.join(args.peft_model, "trainable_params.bin")
-    if os.path.isfile(trainable_params):
-        model.load_state_dict(torch.load(trainable_params, map_location=model.device), strict=False)
+    # 4. Load Trainable Params (Embeddings/Norms)
+    trainable_params_path = os.path.join(args.peft_model, "trainable_params.bin")
+    if os.path.isfile(trainable_params_path):
+        print(f"Loading trainable_params from {trainable_params_path}")
+        model.load_state_dict(torch.load(trainable_params_path, map_location=DEVICE), strict=False)
+    else:
+        print("WARNING: trainable_params.bin not found!")
+
+    # 5. Load LoRA Adapters
+    print("Loading LoRA adapters...")
+    # Ensure we are looking for adapter_model.bin
+    if not os.path.exists(os.path.join(args.peft_model, "adapter_model.bin")):
+        print("CRITICAL ERROR: 'adapter_model.bin' not found. Did you rename pytorch_model.bin?")
+        return
+
     model = PeftModel.from_pretrained(
         model,
         args.peft_model,
-        device_map="auto",
+        device_map=None, # DISABLE auto device map
         torch_dtype=torch.float16,
     )
+
+    # 6. Merge
+    print("Merging weights...")
     model = model.merge_and_unload()
+
+    # 7. Save
+    print(f"Saving to {args.save_path}...")
     model.save_pretrained(args.save_path)
     tokenizer.save_pretrained(args.save_path)
+    print("Done saving!")
 
 if __name__ == "__main__":
     args = parse_config()
