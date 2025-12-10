@@ -1,9 +1,123 @@
+# LongLoRA for Pawsey Setonix in Dec 2025
+
+Pawsey Setonix is a HPC that runs on AMD MI250x GPUs. I was able to successfully migrate this legacy codebase to be compatible with transformers 4.57. This is an incomplete migration - I've only done it for my usecase (SFT and saving to HF format).
+
+This codebase documents my modifications.
+
+## Installation (Pawsey Setonix Dec 2025)
+
+1. Acquire [rocm pytorch image](https://hub.docker.com/layers/rocm/pytorch/rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.8.0).
+
+```
+# 0. salloc into an interactive compute session
+
+# 1. Load singularity (setonix's equivalent of docker)
+module load singularity/4.1.0-slurm
+export SINGULARITY_CACHEDIR="$MYSCRATCH/.singularity"
+export SINGULARITYENV_HIP_VISIBLE_DEVICES=$ROCR_VISIBLE_DEVICES
+
+# 2. Pull docker image
+singularity pull --dir $MYSOFTWARE/singularity/rocm docker://rocm/pytorch:rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.8.0
+
+# 3. Shell into image
+
+# Set these variables for convenience
+project="LongLoRA"
+image="pytorch_rocm7.1_ubuntu22.04_py3.10_pytorch_release_2.8.0"
+
+singularity shell -B $MYSCRATCH/fakehome:${HOME} --env project=$project $MYSOFTWARE/singularity/rocm/${image}.sif
+```
+
+2. Setup venv to extend pytorch image.
+
+```
+# 0. Ensure you have shelled into the pytorch image
+
+# 1. Create venv with --system-site-packages flag
+
+python -m venv --clear --system-site-packages $MYSCRATCH/venvs/rocm-$project
+
+# 2. Link the image's venv to our venv
+
+pip show torch  # confirm its location is /opt/venv/lib/python3.10/site-packages
+
+# then link image's venv to our venv's extra-packages
+echo "/opt/venv/lib/python3.10/site-packages" > $MYSCRATCH/venvs/rocm-${project}/lib/python3.10/site-packages/extra-packages.pth
+
+# 3. Activate venv
+
+source $MYSCRATCH/venvs/rocm-${project}/bin/activate
+```
+
+3. Acquire flash attention. Since it can take 1-2 hrs, I ran the build steps (i.e. steps 3 and 4) below via slurm - `slurm_example/install_flashattn.sh`.
+
+```
+# 0. Ensure you have shelled into the pytorch image AND activated our venv. The image has the tools required to build flash-attn, and our venv is where we will be installing it into.
+
+# 1. Install ninja - otherwise build time will be extremely long
+pip install ninja
+
+# 2. Clone and cd into rocm flash-attn repo
+cd $MYSCRATCH/
+git clone https://github.com/ROCm/flash-attention.git
+cd flash-attention/
+
+# 3. Set build environment args
+GPU_ARCHS=gfx90a        # For MI250x
+
+# Choosing only one head dim reduces build matrix from ~2.7k files to ~600 files. 128 is compatible with most models (llama/mistral) - but may need to be changed for your use case.
+OPT_DIM="128"
+
+MAX_JOBS=8              # Prevent CPU overload
+
+# 4. Run build
+pip install . -v
+
+# TIP: Builds get saved inside /build and is useful for resuming unfinished builds. However, in the circumstance that you needed to change OPT_DIM, you should clear this folder otherwise it will keep trying to build files you no longer need.
+rm -rf build/
+rm -rf flash_attn.egg-info/
+
+# TIP: After building, the wheel should be saved so that this build doesn't need to happen again. Move and rename the wheel to $MYSOFTWARE/python_wheels/flash_attn-2.8.3+rocm7.1_gfx90a_d128-cp310-linux_x86_64.whl (or whatever name matches your build config) - so next time all that is required to install flash-attn into our venv is
+
+pip install $MYSOFTWARE/python_wheels/flash_attn-2.8.3+rocm7.1_gfx90a_d128-cp310-linux_x86_64.whl
+```
+
+4. Install LongLoRA
+
+```
+# 0. Ensure you have shelled into the pytorch image, activated our venv and have installed flash-attn.
+
+# 1. Clone and cd into this repo
+cd $MYSCRATCH/
+git clone https://github.com/alexchen5/LongLoRA.git
+git branch atomworld            # changes are on atomworld branch
+cd $MYSCRATCH/LongLoRA
+
+# 2. Install deps
+pip install -r requirements.txt
+```
+
+## SFT
+
+I used `slurm_example/finetune.sh`.
+
+## Exporting to Hugging Face format
+
+I used `slurm_example/extract_model.sh` for the export, and `slurm_example/check_diff.sh` as a sanity check to verify the exported model is different to the base model.
+
+The steps done in `slurm_example/extract_model.sh` mostly follow the instructions described in the original README. I just needed to additionally do `mv ${peft_model}/checkpoint-${checkpoint}/adapter_model.safetensors ${peft_model}/checkpoint-${checkpoint}/adapter_model.bak.safetensors` - as the SFT workflow generates a blank `adapter_model.safetensors` file that we need to delete (or rename) - so `PeftModel` doesn't default to it instead of finding our (legacy format) `adapter_model.bin`.
+
+Finally, when running inference with vLLM you will also need to manually update the `max_position_embeddings` and `max_sequence_length` keys of the `config.json` of the exported model to match your LongLoRA SFT setting.
+
+---
+
+Original README below:
+
 <p align="center" width="100%">
 <img src="imgs/LongAlpaca.png" alt="Stanford-Alpaca" style="width: 100%; min-width: 300px; display: block; margin: auto;">
 </p>
 
 # LongLoRA and LongAlpaca for Long-context LLMs
-
 
 [![Huggingface Models](https://img.shields.io/badge/Models-Huggingface%20Models-bron)](https://huggingface.co/Yukang)
 [![Data](https://img.shields.io/badge/Data-LongAlpaca%2012k-light)](https://huggingface.co/datasets/Yukang/LongAlpaca-12k)
@@ -13,8 +127,8 @@
 [![Data License](https://img.shields.io/badge/Data%20License-CC%20By%20NC%204.0-orange.svg)](https://github.com/dvlab-research/LongLoRA/blob/main/DATA_LICENSE)
 [![Weight License](https://img.shields.io/badge/Weight%20License-CC%20By%20NC%204.0-red)](https://github.com/dvlab-research/LongLoRA/blob/main/WEIGHT_LICENSE)
 
-
 ## TABLE OF CONTENTS
+
 1. [News](#news)
 2. [Highlights](#highlights)
 3. [How to contribute](#how-to-contribute)
@@ -31,15 +145,16 @@
 14. [Citation](#citation)
 15. [Acknowledgement](#acknowledgement)
 16. [License](#license)
-      
+
 ## News
+
 - [x] [2024.1.17] [LongLoRA](https://arxiv.org/abs/2309.12307) has been accepted by **ICLR 2024** as an **Oral** presentation.
 - [x] [2023.11.19] We release a new version of LongAlpaca models, [LongAlpaca-7B-16k](https://huggingface.co/Yukang/LongAlpaca-7B-16k), [LongAlpaca-7B-16k](https://huggingface.co/Yukang/LongAlpaca-13B-16k), and [LongAlpaca-7B-16k](https://huggingface.co/Yukang/LongAlpaca-70B-16k). These models are fine-tuned on a subset LongAlpaca-12k dataset with LongLoRA in SFT, [LongAlpaca-16k-length](https://huggingface.co/datasets/Yukang/LongAlpaca-16k-length). We evaluate the [LongAlpaca-7B-16k](https://huggingface.co/Yukang/LongAlpaca-7B-16k) model on LongBench and L-Eval benchmarks and results can be found [here](https://github.com/dvlab-research/LongLoRA/tree/main/benchmarks).
 - [x] [2023.11.2] We have updated our LongAlpaca models from alpaca prompting to llama2 prompting, which is consistent to their pre-trained models. Please refer to the [inference code](https://github.com/dvlab-research/LongLoRA/blob/2345c6d030f61ac3a031906386a103a5b05e0e6f/inference.py#L18) with the llama2 prompting.
 - [x] [2023.10.23] We support the combination of [QLoRA](https://github.com/artidoro/qlora) and LongLoRA in the [supervised fine-tuning](supervised-fine-tune-qlora.py), for further reduction of the GPU memory cost. We release the LoRA weights of a 7B model at [LongAlpaca-7B-qlora-weights](https://huggingface.co/Yukang/LongAlpaca-7B-qlora-weights).
 - [x] [2023.10.18] We support [StreamingLLM](https://github.com/mit-han-lab/streaming-llm) inference on our LongAlpaca models. This increases the context-length of the multi-round dialogue in StreamingLLM.
 - [x] [2023.10.8] **We release the long instruction-following dataset**, [LongAlpaca-12k](https://huggingface.co/datasets/Yukang/LongAlpaca-12k) and **the corresponding models**, [LongAlpaca-7B](https://huggingface.co/Yukang/LongAlpaca-7B), [LongAlpaca-13B](https://huggingface.co/Yukang/LongAlpaca-13B), and [LongAlpaca-70B](https://huggingface.co/Yukang/LongAlpaca-70B).
-- (*The previous sft models*, [Llama-2-13b-chat-longlora-32k-sft](https://huggingface.co/Yukang/Llama-2-13b-chat-longlora-32k-sft) and [Llama-2-70b-chat-longlora-32k-sft](https://huggingface.co/Yukang/Llama-2-70b-chat-longlora-32k-sft), *have been deprecated*.)
+- (_The previous sft models_, [Llama-2-13b-chat-longlora-32k-sft](https://huggingface.co/Yukang/Llama-2-13b-chat-longlora-32k-sft) and [Llama-2-70b-chat-longlora-32k-sft](https://huggingface.co/Yukang/Llama-2-70b-chat-longlora-32k-sft), _have been deprecated_.)
 - [x] [2023.10.3] We add support GPTNeoX models. Please refer to this [PR](https://github.com/dvlab-research/LongLoRA/pull/32) for usage. Thanks for @naubull2 for this contribution.
 - [x] [2023.9.22] We release all our fine-tuned [models](https://huggingface.co/Yukang), including **70B-32k models**, [LLaMA2-LongLoRA-70B-32k](https://huggingface.co/Yukang/Llama-2-70b-longlora-32k), [LLaMA2-LongLoRA-7B-100k](https://huggingface.co/Yukang/Llama-2-7b-longlora-100k-ft). Welcome to check them out!
 - [x] [2023.9.22] We release [Paper](http://arxiv.org/abs/2309.12307) and this GitHub repo, including training and evaluation code.
@@ -54,12 +169,13 @@
 [Jiaya Jia](https://scholar.google.com/citations?user=XPAkzTEAAAAJ&hl=en)<br />
 
 ## Highlights
+
 1. In LongLoRA approach, The proposed shifted short attention is easy to implement, compatible with Flash-Attention, and is not required during inference.
 2. We released all our models, including models from 7B to 70B, context length from 8k to 100k, including [LLaMA2-LongLoRA-7B-100k](https://huggingface.co/Yukang/Llama-2-7b-longlora-100k-ft), [LLaMA2-LongLoRA-13B-64k](https://huggingface.co/Yukang/Llama-2-13b-longlora-64k), and [LLaMA2-LongLoRA-70B-32k](https://huggingface.co/Yukang/Llama-2-70b-longlora-32k).
 3. We built up a long-context instruction-following dataset, [LongAlpaca-12k](#longalpaca-data). We released the corresponding [LongAlpaca-7B](https://huggingface.co/Yukang/LongAlpaca-7B), [LongAlpaca-13B](https://huggingface.co/Yukang/LongAlpaca-13B) and [LongAlpaca-70B](https://huggingface.co/Yukang/LongAlpaca-70B) models. To our best knowledge, this is the first open-sourced long-context 70B model.
 
-
 ## How to Contribute
+
 - Make sure to have git installed.
 - Create your own [fork](https://github.com/dvlab-research/LongLoRA/fork) of the project.
 - Clone the repository on your local machine, using git clone and pasting the url of this project.
@@ -67,22 +183,26 @@
 - Commit and push your changes.
 - Make a pull request when finished modifying the project.
 
-
 ## Usage Requirements
-To download and use the [pre-trained weights](#pre-trained-weights) you will need:
-1. Hugging Face (HF) account with valid email. Note, the email used for HF must alse be used for the license agreement.
-2. Accept the Meta [license and acceptable use policy](https://ai.meta.com/resources/models-and-libraries/llama-downloads/) 
 
+To download and use the [pre-trained weights](#pre-trained-weights) you will need:
+
+1. Hugging Face (HF) account with valid email. Note, the email used for HF must alse be used for the license agreement.
+2. Accept the Meta [license and acceptable use policy](https://ai.meta.com/resources/models-and-libraries/llama-downloads/)
 
 ## Installation and Quick Guide
+
 To install and run the application:
+
 1. [Fork this repo](https://github.com/dvlab-research/LongLoRA/fork) on github
 2. Clone the repository on your local machine, using git clone and pasting the url of this project.
 3. Run the following code:
+
 ```
 pip install -r requirements.txt
 pip install flash-attn --no-build-isolation
 ```
+
 4. Use either a [Released model](#released-models) or [Fine tune](#fine-tuning) a model to fit your preferences.
 5. Test your model by chat.
 6. Deploy your own demo.
@@ -95,12 +215,12 @@ LongAlpaca-12k contains 9k long QA data that we collected and 3k short QA sample
 <img src="imgs/data-distribution-in-longalpaca12k.png" alt="Stanford-Alpaca" style="width: 60%; min-width: 300px; display: block; margin: auto;">
 </p>
 
-
-| Data           | Short QA | Long QA  | Total    | Download |
-|:---------------|----------|----------|----------|----------|
-| LongAlpaca-12k | 3k       | 9k       | 12k      | [Link](https://huggingface.co/datasets/Yukang/LongAlpaca-12k) |
+| Data           | Short QA | Long QA | Total | Download                                                      |
+| :------------- | -------- | ------- | ----- | ------------------------------------------------------------- |
+| LongAlpaca-12k | 3k       | 9k      | 12k   | [Link](https://huggingface.co/datasets/Yukang/LongAlpaca-12k) |
 
 Following the original Alpaca format, our Long QA data uses the following prompts for fine-tuning:
+
 - `instruction`: `str`, describes the task the model should perform. For example, to answer a question after reading a book section or paper. We vary the contents and questions to make instructions diverse.
 - `output`: `str`, the answer to the instruction.
 
@@ -109,53 +229,58 @@ We did not use the `input` format in the Alpaca format for simplicity.
 ## Models
 
 ### Models with supervised fine-tuning
-| Model          | Size | Context | Train   | Link                                                       |
-|:---------------|------|---------|---------|------------------------------------------------------------|
-| LongAlpaca-7B  | 7B   | 32768   | Full FT | [Model](https://huggingface.co/Yukang/LongAlpaca-7B)       |
-| LongAlpaca-13B | 13B  | 32768   | Full FT | [Model](https://huggingface.co/Yukang/LongAlpaca-13B)      |
-| LongAlpaca-70B | 70B  | 32768   | LoRA+ | [Model](https://huggingface.co/Yukang/LongAlpaca-70B) [(LoRA-weight)](https://huggingface.co/Yukang/LongAlpaca-70B-lora) |
 
+| Model          | Size | Context | Train   | Link                                                                                                                     |
+| :------------- | ---- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| LongAlpaca-7B  | 7B   | 32768   | Full FT | [Model](https://huggingface.co/Yukang/LongAlpaca-7B)                                                                     |
+| LongAlpaca-13B | 13B  | 32768   | Full FT | [Model](https://huggingface.co/Yukang/LongAlpaca-13B)                                                                    |
+| LongAlpaca-70B | 70B  | 32768   | LoRA+   | [Model](https://huggingface.co/Yukang/LongAlpaca-70B) [(LoRA-weight)](https://huggingface.co/Yukang/LongAlpaca-70B-lora) |
 
 ### Models with context extension via fully fine-tuning
-| Model                       | Size | Context | Train | Link                                                              |
-|:----------------------------|------|---------|-------|-------------------------------------------------------------------|
-| Llama-2-7b-longlora-8k-ft   | 7B   | 8192    | Full FT    | [Model](https://huggingface.co/Yukang/Llama-2-7b-longlora-8k-ft)  |
-| Llama-2-7b-longlora-16k-ft  | 7B   | 16384   | Full FT    | [Model](https://huggingface.co/Yukang/Llama-2-7b-longlora-16k-ft)  |
-| Llama-2-7b-longlora-32k-ft  | 7B   | 32768   | Full FT    | [Model](https://huggingface.co/Yukang/Llama-2-7b-longlora-32k-ft)  |
-| Llama-2-7b-longlora-100k-ft | 7B   | 100000  | Full FT    | [Model](https://huggingface.co/Yukang/Llama-2-7b-longlora-100k-ft) |
-| Llama-2-13b-longlora-8k-ft  | 13B  | 8192    | Full FT    | [Model](https://huggingface.co/Yukang/Llama-2-13b-longlora-8k-ft)  |
-| Llama-2-13b-longlora-16k-ft | 13B  | 16384   | Full FT    | [Model](https://huggingface.co/Yukang/Llama-2-13b-longlora-16k-ft) |
-| Llama-2-13b-longlora-32k-ft | 13B  | 32768   | Full FT    | [Model](https://huggingface.co/Yukang/Llama-2-13b-longlora-32k-ft) |
+
+| Model                       | Size | Context | Train   | Link                                                               |
+| :-------------------------- | ---- | ------- | ------- | ------------------------------------------------------------------ |
+| Llama-2-7b-longlora-8k-ft   | 7B   | 8192    | Full FT | [Model](https://huggingface.co/Yukang/Llama-2-7b-longlora-8k-ft)   |
+| Llama-2-7b-longlora-16k-ft  | 7B   | 16384   | Full FT | [Model](https://huggingface.co/Yukang/Llama-2-7b-longlora-16k-ft)  |
+| Llama-2-7b-longlora-32k-ft  | 7B   | 32768   | Full FT | [Model](https://huggingface.co/Yukang/Llama-2-7b-longlora-32k-ft)  |
+| Llama-2-7b-longlora-100k-ft | 7B   | 100000  | Full FT | [Model](https://huggingface.co/Yukang/Llama-2-7b-longlora-100k-ft) |
+| Llama-2-13b-longlora-8k-ft  | 13B  | 8192    | Full FT | [Model](https://huggingface.co/Yukang/Llama-2-13b-longlora-8k-ft)  |
+| Llama-2-13b-longlora-16k-ft | 13B  | 16384   | Full FT | [Model](https://huggingface.co/Yukang/Llama-2-13b-longlora-16k-ft) |
+| Llama-2-13b-longlora-32k-ft | 13B  | 32768   | Full FT | [Model](https://huggingface.co/Yukang/Llama-2-13b-longlora-32k-ft) |
 
 ### Models with context extension via improved LoRA fine-tuning
-| Model                       | Size | Context | Train | Link                                                                |
-|:----------------------------|------|---------|-------|---------------------------------------------------------------------|
-| Llama-2-7b-longlora-8k      | 7B   | 8192    | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-7b-longlora-8k) |
-| Llama-2-7b-longlora-16k     | 7B   | 16384   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-7b-longlora-16k)       |
-| Llama-2-7b-longlora-32k     | 7B   | 32768   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-7b-longlora-32k)       |
-| Llama-2-13b-longlora-8k     | 13B  | 8192    | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-13b-longlora-8k)       |
-| Llama-2-13b-longlora-16k    | 13B  | 16384   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-13b-longlora-16k)      |
-| Llama-2-13b-longlora-32k    | 13B  | 32768   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-13b-longlora-32k)      |
-| Llama-2-13b-longlora-64k    | 13B  | 65536   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-13b-longlora-64k)      |
-| Llama-2-70b-longlora-32k    | 70B  | 32768   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-70b-longlora-32k)      |
-| Llama-2-70b-chat-longlora-32k    | 70B  | 32768   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-70b-chat-longlora-32k) |
+
+| Model                         | Size | Context | Train | Link                                                                       |
+| :---------------------------- | ---- | ------- | ----- | -------------------------------------------------------------------------- |
+| Llama-2-7b-longlora-8k        | 7B   | 8192    | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-7b-longlora-8k)        |
+| Llama-2-7b-longlora-16k       | 7B   | 16384   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-7b-longlora-16k)       |
+| Llama-2-7b-longlora-32k       | 7B   | 32768   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-7b-longlora-32k)       |
+| Llama-2-13b-longlora-8k       | 13B  | 8192    | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-13b-longlora-8k)       |
+| Llama-2-13b-longlora-16k      | 13B  | 16384   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-13b-longlora-16k)      |
+| Llama-2-13b-longlora-32k      | 13B  | 32768   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-13b-longlora-32k)      |
+| Llama-2-13b-longlora-64k      | 13B  | 65536   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-13b-longlora-64k)      |
+| Llama-2-70b-longlora-32k      | 70B  | 32768   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-70b-longlora-32k)      |
+| Llama-2-70b-chat-longlora-32k | 70B  | 32768   | LoRA+ | [LoRA-weight](https://huggingface.co/Yukang/Llama-2-70b-chat-longlora-32k) |
 
 ## Training
+
 ### Pre-trained weights
+
 We use LLaMA2 models as the pre-trained weights and fine-tune them to long context window sizes. Download based on your choices.
 
-| Pre-trained weights                                                        |
-|:---------------------------------------------------------------------------|
-| [Llama-2-7b-hf](https://huggingface.co/meta-llama/Llama-2-7b-hf)           |
-| [Llama-2-13b-hf](https://huggingface.co/meta-llama/Llama-2-13b-hf)         |
-| [Llama-2-70b-hf](https://huggingface.co/meta-llama/Llama-2-70b-hf)         |
-| [Llama-2-7b-chat-hf](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) |
-| [Llama-2-13b-chat-hf](https://huggingface.co/meta-llama/Llama-2-13b-chat-hf)         |
-| [Llama-2-70b-chat-hf](https://huggingface.co/meta-llama/Llama-2-70b-chat-hf)         |
+| Pre-trained weights                                                          |
+| :--------------------------------------------------------------------------- |
+| [Llama-2-7b-hf](https://huggingface.co/meta-llama/Llama-2-7b-hf)             |
+| [Llama-2-13b-hf](https://huggingface.co/meta-llama/Llama-2-13b-hf)           |
+| [Llama-2-70b-hf](https://huggingface.co/meta-llama/Llama-2-70b-hf)           |
+| [Llama-2-7b-chat-hf](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf)   |
+| [Llama-2-13b-chat-hf](https://huggingface.co/meta-llama/Llama-2-13b-chat-hf) |
+| [Llama-2-70b-chat-hf](https://huggingface.co/meta-llama/Llama-2-70b-chat-hf) |
 
 This project also supports GPTNeoX models as the base model architecture. Some candidate pre-trained weights may include [GPT-NeoX-20B](https://huggingface.co/EleutherAI/gpt-neox-20b), [Polyglot-ko-12.8B](https://huggingface.co/EleutherAI/polyglot-ko-12.8b) and other variants.
 
 ### Fine-tuning
+
 ```
 torchrun --nproc_per_node=8 fine-tune.py  \
         --model_name_or_path path_to/Llama-2-7b-hf \
@@ -189,12 +314,15 @@ torchrun --nproc_per_node=8 fine-tune.py  \
 - Please set `use_flash_attn` as `False` if you use V100 machines or do not install flash attention.
 - You can set `low_rank_training` as `False` if you want to use fully fine-tuning. It will cost more GPU memory and slower, but the performance will be a bit better.
 - When training is finished, to get the full model weight:
+
 ```
 cd path_to_saving_checkpoints && python zero_to_fp32.py . pytorch_model.bin
 ```
+
 Note that the path_to_saving_checkpoints might be the global_step directory, which depends on the deepspeed versions.
 
 ### Supervised Fine-tuning
+
 ```
 torchrun --nproc_per_node=8 supervised-fine-tune.py  \
         --model_name_or_path path_to_Llama2_chat_models \
@@ -220,19 +348,24 @@ torchrun --nproc_per_node=8 supervised-fine-tune.py  \
         --deepspeed "ds_configs/stage2.json" \
         --tf32 True
 ```
+
 - There is no need to make supervised fine-tuning upon the fine-tuned context extended models. It is all right to directly use base model as Llama2-chat models, as the amount of long instruction following data is enough for SFT.
 - Our long instruction following data can be found in [LongAlpaca-12k.json](https://huggingface.co/datasets/Yukang/LongAlpaca-12k).
 - Note that supervised-fine-tune.py can be replaced by supervised-fine-tune-qlora.py if you want to try 4-bit quantized fine-tuning for further GPU memory reduction. This follows [QLoRA](https://github.com/artidoro/qlora).
 - If you meet issue for saving pytorch_model.bin after the qlora sft, please refer to this [issue](https://github.com/dvlab-research/LongLoRA/issues/123).
 
 ### Get trainable weights in low-rank training
+
 In low-rank training, we set embedding and normalization layers as trainable. Please use the following line to extract the trainable weights `trainable_params.bin` from `pytorch_model.bin`
+
 ```
 python3 get_trainable_weights.py --checkpoint_path path_to_saving_checkpoints --trainable_params "embed,norm"
 ```
 
 ### Merge LoRA Weight
+
 Merge the LoRA weights of `pytorch_model.bin` and trainable parameters `trainable_params.bin`, save the resulting model into your desired path in the Hugging Face format:
+
 ```
 python3 merge_lora_weights_and_save_hf_model.py \
         --base_model path_to/Llama-2-7b-hf \
@@ -240,7 +373,9 @@ python3 merge_lora_weights_and_save_hf_model.py \
         --context_size 8192 \
         --save_path path_to_saving_merged_model
 ```
+
 For example,
+
 ```
 python3 merge_lora_weights_and_save_hf_model.py \
         --base_model /dataset/pretrained-models/Llama-2-7b-hf \
@@ -249,25 +384,30 @@ python3 merge_lora_weights_and_save_hf_model.py \
         --save_path /dataset/yukangchen/models/Llama-2-7b-longlora-8k-merged
 ```
 
-
 ## Evaluation
+
 ### Perplexity Validation
+
 To evaluate a model that is trained in the low-rank setting, please set both `base_model` and `peft_model`. `base_model` is the pre-trained weight. `peft_model` is the path to the saved checkpoint, which should contain `trainable_params.bin`, `adapter_model.bin` and `adapter_config.json`. For example,
+
 ```
 python3 eval.py --seq_len 8192 --context_size 8192 --batch_size 1 --base_model path_to/Llama-2-7b-hf --peft_model path_to_saving_checkpoints --data_path pg19/test.bin
 ```
 
 Or evaluate with multiple GPUs as follows.
+
 ```
 torchrun --nproc_per_node=auto eval_distributed.py --seq_len 8192 --context_size 8192 --batch_size 1 --base_model path_to/Llama-2-7b-hf --peft_model path_to_saving_checkpoints --data_path pg19/test.bin
 ```
 
 To evaluate a model that is fully fine-tuned, you only need to set `base_model` as the path to the saved checkpoint, which should contain `pytorch_model.bin` and `config.json`. `peft_model` should be ignored.
+
 ```
 python3 eval.py --seq_len 8192 --context_size 8192 --batch_size 1 --base_model path_to_saving_checkpoints --data_path pg19/test.bin
 ```
 
 Or evaluate with multiple GPUs as follows.
+
 ```
 torchrun --nproc_per_node=auto eval_distributed.py --seq_len 8192 --context_size 8192 --batch_size 1 --base_model path_to_saving_checkpoints --data_path pg19/test.bin
 ```
@@ -276,15 +416,16 @@ torchrun --nproc_per_node=auto eval_distributed.py --seq_len 8192 --context_size
 
 - We have already tokenized the validation and test splits of PG19 and proof-pile dataset into `pg19/validation.bin`, `pg19/test.bin`, and `proof-pile/test_sampled_data.bin`, with the tokenizer of LLaMA. `proof-pile/test_sampled_data.bin` contains 128 documents that are randomly sampled from the total proof-pile test split. For each document, it has at least 32768 tokens. We also release the sampled ids in [proof-pile/test_sampled_ids.bin](https://drive.google.com/file/d/1cnzWODLRQYAd7HeugzLCIhaqzaLZv7J5/view?usp=share_link). You can download them from the links below.
 
-| Dataset    | Split      | Link                                                                                                         |
-|:-----------|------------|--------------------------------------------------------------------------------------------------------------|
-| PG19       | validation | [pg19/validation.bin](https://drive.google.com/file/d/1rbJvb0qRIf2mQoN2ON7S93TbTzMnlrN6/view?usp=share_link) |
-| PG19       | test       | [pg19/test.bin](https://drive.google.com/file/d/1QANDMdctpacPAYgS04adDXqByGEq-Ret/view?usp=share_link)       |
-| Proof-pile | test       | [proof-pile/test_sampled_data.bin](https://drive.google.com/file/d/1bUI5lPDvrqzY_XXJJ2sSuvZx0Y9AZClE/view?usp=share_link)         |
- 
+| Dataset    | Split      | Link                                                                                                                      |
+| :--------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| PG19       | validation | [pg19/validation.bin](https://drive.google.com/file/d/1rbJvb0qRIf2mQoN2ON7S93TbTzMnlrN6/view?usp=share_link)              |
+| PG19       | test       | [pg19/test.bin](https://drive.google.com/file/d/1QANDMdctpacPAYgS04adDXqByGEq-Ret/view?usp=share_link)                    |
+| Proof-pile | test       | [proof-pile/test_sampled_data.bin](https://drive.google.com/file/d/1bUI5lPDvrqzY_XXJJ2sSuvZx0Y9AZClE/view?usp=share_link) |
 
 ### Passkey Retrieval
+
 We provide a manner to test the passkey retrieval accuracy. For example,
+
 ```
 python3 passkey_retrivial.py \
         --context_size 32768 \
@@ -292,13 +433,17 @@ python3 passkey_retrivial.py \
         --max_tokens 32768 \
         --interval 1000
 ```
+
 - Note that the `context_size` is the context length during fine-tuning.
 - `max_tokens` is maximum length for the document in passkey retrieval evaluation.
 - `interval` is the interval during the document length increasing. It is a rough number because the document increases by sentences.
 
 ## Demo
+
 ### Local Inference
+
 To chat with LongAlpaca models,
+
 ```
 python3 inference.py  \
         --base_model path_to_model \
@@ -308,7 +453,9 @@ python3 inference.py  \
         --flash_attn True \
         --material $material_content
 ```
+
 To ask a question related to a book:
+
 ```
 python3 inference.py  \
         --base_model /data/models/LongAlpaca-13B \
@@ -320,6 +467,7 @@ python3 inference.py  \
 ```
 
 To ask a question related to a paper:
+
 ```
 python3 inference.py  \
         --base_model /data/models/LongAlpaca-13B \
@@ -329,10 +477,13 @@ python3 inference.py  \
         --flash_attn True \
         --material "materials/paper1.txt"
 ```
+
 - Note that inference.py can be replaced by inference-qlora.py if you want to try 4-bit quantized fine-tuning for further GPU memory reduction. This follows [QLoRA](https://github.com/artidoro/qlora).
 
 ### Online Demo
-To deploy your own demo run 
+
+To deploy your own demo run
+
 ```
 python3 demo.py  \
 	--base_model path_to_model \
@@ -340,7 +491,9 @@ python3 demo.py  \
 	--max_gen_len $max_gen_len \
 	--flash_attn True
 ```
-Example 
+
+Example
+
 ```
 python3 demo.py  \
 	--base_model /data/models/LongAlpaca-13B \
@@ -348,11 +501,14 @@ python3 demo.py  \
 	--max_gen_len 512 \
 	--flash_attn True
 ```
+
 - Note that `flash_attn=True` will make the generation slow but save much GPU memory.
 
 ## Streaming Inference
+
 We support the inference of LongAlpaca models with [StreamingLLM](https://github.com/mit-han-lab/streaming-llm). This increases the context-length of the multi-round dialogue in StreamingLLM.
 Here is an example,
+
 ```
 python run_streaming_llama_longalpaca.py \
 	----enable_streaming \
@@ -360,13 +516,16 @@ python run_streaming_llama_longalpaca.py \
 	--use_flash_attn True \
 	--recent_size 32768
 ```
+
 - Note that please use a smaller recent_size if you meet OOM issues, for example 8192.
 - `test_filepath` is the json file that contains prompts for inference. We provide an example file [outputs_stream.json](https://drive.google.com/file/d/13WGepnamWR8FKQS2UceyhNgV1ALHNx3w/view?usp=share_link), which is a subset of LongAlpaca-12k. You can replace it to your own questions.
 
 ## Data Generation via Pdf2text
+
 During our dataset collection, we convert paper and books from pdf to text. The conversion quality has a large influence on the final model quality. We think that this step is non-trivial. We release the tool for the pdf2txt conversion, in the folder `pdf2txt`. It is built upon `pdf2image`, `easyocr`, `ditod` and `detectron2`. Please refer to the [README.md](pdf2txt/README.md) in `pdf2txt` for more details.
 
 ## Examples
+
 <p align="center"> <img src="imgs/paper-improvements.png" width="100%"> </p>
 <p align="center"> <img src="imgs/paper-review.png" width="100%"> </p>
 <p align="center"> <img src="imgs/paper-style-compare-cvpr-iclr.png" width="100%"> </p>
@@ -377,6 +536,7 @@ During our dataset collection, we convert paper and books from pdf to text. The 
 <p align="center"> <img src="imgs/economy-prediction.png" width="100%"> </p>
 
 ## Citation
+
 If you find this project useful in your research, please consider citing:
 
 ```
@@ -388,7 +548,6 @@ If you find this project useful in your research, please consider citing:
 }
 ```
 
-
 ```
 @misc{long-alpaca,
   author = {Yukang Chen and Shaozuo Yu and Shengju Qian and Haotian Tang and Xin Lai and Zhijian Liu and Song Han and Jiaya Jia},
@@ -399,16 +558,18 @@ If you find this project useful in your research, please consider citing:
   howpublished = {\url{https://github.com/dvlab-research/LongLoRA}},
 }
 ```
+
 ## Acknowledgement
--  This work is built upon the [LLaMA2](https://ai.meta.com/llama) as the pre-trained models.
--  This work can also be built upon the [GPTNeoX-HF](https://huggingface.co/docs/transformers/model_doc/gpt_neox) which is based upon [EleutherAI/GPTNeoX](https://github.com/EleutherAI/gpt-neox) as the pre-trained model architecture.
+
+- This work is built upon the [LLaMA2](https://ai.meta.com/llama) as the pre-trained models.
+- This work can also be built upon the [GPTNeoX-HF](https://huggingface.co/docs/transformers/model_doc/gpt_neox) which is based upon [EleutherAI/GPTNeoX](https://github.com/EleutherAI/gpt-neox) as the pre-trained model architecture.
 - This work is based on [DeepSpeed](https://github.com/microsoft/DeepSpeed), [peft](https://github.com/huggingface/peft), and [Flash-Attention2](https://github.com/Dao-AILab/flash-attention) for acceleration.
 - Some evaluation code is modified upon [Landmark Attention](https://github.com/epfml/landmark-attention).
 - We use [LongChat](https://github.com/DachengLi1/LongChat) for the retrieval evaluation.
 - We follow [StreamingLLM](https://github.com/mit-han-lab/streaming-llm) for streaming inference.
 - We combine [QLoRA](https://github.com/artidoro/qlora) with LongLoRA for supervised fine-tuning.
 
-
 ## License
-- LongLoRA is licensed under the Apache License 2.0. This means that it requires the preservation of copyright and license notices. 
+
+- LongLoRA is licensed under the Apache License 2.0. This means that it requires the preservation of copyright and license notices.
 - Data and weights are under CC-BY-NC 4.0 License. They are licensed for research use only, and allowed only non-commercial. Models trained using the dataset should not be used outside of research purposes.

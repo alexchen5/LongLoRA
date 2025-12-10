@@ -1,6 +1,10 @@
 # Python
 # See https://www.python.org/dev/peps/pep-0402/
 
+models/
+data/
+output/
+
 # 1. Byte-compiled / optimized / DLL files
 ############################################
 __pycache__/
